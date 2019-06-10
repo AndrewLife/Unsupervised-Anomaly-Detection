@@ -9,14 +9,14 @@
 
 from collections import deque
 
-UNCLASSIFIED = 0
-NORMAL = 1
-ANOMALY = 2
-PENDING = 3
+UNCLASSIFIED   = 0
+NORMAL         = 1
+ANOMALY        = 2
+PENDING        = 3
 FALSE_POSITIVE = 4
 FALSE_NEGATIVE = 5
-TRUE_POSITIVE = 6
-TRUE_NEGATIVE = 7
+TRUE_POSITIVE  = 6
+TRUE_NEGATIVE  = 7
 
 def lce(data, min_cluster=2, num_benchmarks=15):
     # Number of dimensions per datapoint
@@ -26,6 +26,7 @@ def lce(data, min_cluster=2, num_benchmarks=15):
     delta = 1
 
     lce = np.zeros(num_benchmarks, dtype=int)
+    cells = []
 
     for benchmark in range(num_benchmarks):
         #  Number of quadrats per dimension. Same as 1 / delta
@@ -46,6 +47,9 @@ def lce(data, min_cluster=2, num_benchmarks=15):
             quadrat = tuple(int(np.ceil(data[i][f] / delta)) - 1 if data[i][f] != 0 else 0 for f in range(feature_count))
             quadrat_sums[quadrat] += 1
 
+            if i == len(data) - 1:
+                cells.append(quadrat)
+
         for i in np.ndenumerate(quadrat_sums):
             quadrat_sum = quadrat_sums[i[0]]
 
@@ -59,21 +63,23 @@ def lce(data, min_cluster=2, num_benchmarks=15):
         
         delta /= 2
 
-    return lce
+    return lce, cells
 
-def classify(datapoint, trusted_data, last_classification):
+def classify(datapoint, trusted_data, last_classification, last_cells=None):
     """Classifies data as NORMAL, ANOMALY, or PENDING.
 
     Args:
         datapoint: The current datapoint to classify. May be array-like for multi-dimensional data.
-        trusted_data: A double-ended queque of datapoints that are trusted
-        last_classification: The classification of the previous datapoint
+        trusted_data: A double-ended queque of datapoints that are trusted.
+        last_classification: The classification of the previous datapoint.
+        last_cells: A list containing the cell indicies that the last point landed in.
     Returns:
-        A tuple containing the revised classification for the last datapoint, and the classification for the new datapoint.
+        A tuple containing the revised classification for the last datapoint, and the classification for the new datapoint, and the list of the quadrat indices that the last point landed in.
     """
     
     revision = last_classification
     classification = UNCLASSIFIED
+    cells = None
 
     # Number of dimensions per datapoint
     feature_count = len(datapoint)
@@ -104,26 +110,39 @@ def classify(datapoint, trusted_data, last_classification):
         num_benchmarks = 15
 
         # Find LCE for trusted set and trusted set + new data
-        all_lce = lce(all_data, min_cluster, num_benchmarks)
-        trusted_lce = lce(all_data[:-1], min_cluster, num_benchmarks)
+        all_lce, cells = lce(all_data, min_cluster, num_benchmarks)
+        trusted_lce = lce(all_data[:-1], min_cluster, num_benchmarks)[0]
 
         all_lce_val = 0
         trusted_lce_val = 0
+
+        cell = None
+        last_cell = None
+
         # If all_lce_val > trusted_lce_val, the new data resides in a pre-existing cluster
-        for lce_val in all_lce:
+        for i in range(len(all_lce)):
+            lce_val = all_lce[i]
             if lce_val > 0:
                 all_lce_val = lce_val
+                if last_cells != None:
+                    cell = cells[i]
+                    last_cell = last_cells[i]
         for lce_val in trusted_lce:
             if lce_val > 0:
                 trusted_lce_val = lce_val
 
+        shared_cell = last_cell == cell
         clustered = all_lce_val > trusted_lce_val
 
         if clustered:
             classification = NORMAL
 
             if last_classification == PENDING:
-                revision = NORMAL
+                if shared_cell:
+                    revision = NORMAL
+                else:
+                    print(".")
+                    revision = ANOMALY
 
         else:
             classification = PENDING
@@ -146,7 +165,7 @@ def classify(datapoint, trusted_data, last_classification):
     # Keep track of current datapoint for future reference
     trusted_data.append(datapoint)
 
-    return revision, classification
+    return revision, classification, cells
 
 
 if __name__ == '__main__':
@@ -189,6 +208,7 @@ if __name__ == '__main__':
     anomalies = 0
 
     # Classify the remaining data
+    last_cells = None
     for i in range(trusted_size, data_size):
         # The new, unclassified data
         datapoint = (all_data[i],)
@@ -197,7 +217,7 @@ if __name__ == '__main__':
         last_classification = results[i - 1]
 
         # Get a revision for the last classification if it was pending, and a classification for the new data.
-        revision, fresh = classify(datapoint, trusted_data, last_classification)
+        revision, fresh, last_cells = classify(datapoint, trusted_data, last_classification, last_cells)
 
         # Store our results
         results[i - 1] = revision
